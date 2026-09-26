@@ -1,0 +1,271 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CANDIDATE
+  RECRUITER
+  ADMIN
+}
+
+enum InterviewStatus {
+  CREATED
+  READY
+  IN_PROGRESS
+  COMPLETED
+  TERMINATED
+}
+
+enum CoverageStatus {
+  NOT_VERIFIED
+  PARTIALLY_VERIFIED
+  VERIFIED
+  CONTRADICTED
+}
+
+enum QuestionType {
+  INTRODUCTORY
+  TECHNICAL_CONCEPT
+  PRACTICAL_EXPERIENCE
+  SYSTEM_DESIGN
+  REASONING_CHALLENGE
+  COUNTERFACTUAL
+  CONSISTENCY_CLARIFICATION
+  CODE_WALKTHROUGH
+}
+
+enum IntegritySignalType {
+  TAB_HIDDEN
+  TAB_VISIBLE
+  WINDOW_BLUR
+  WINDOW_FOCUS
+  FULLSCREEN_EXIT
+  MIC_DISCONNECTED
+  AUDIO_DEVICE_CHANGED
+  RAPID_PASTE_ATTEMPT
+}
+
+model User {
+  id             String             @id @default(uuid())
+  email          String             @unique
+  name           String
+  role           Role               @default(CANDIDATE)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  interviews     InterviewSession[] @relation("CandidateInterviews")
+  createdJobs    JobRole[]          @relation("RecruiterJobs")
+  auditLogs      AuditLogEntry[]
+}
+
+model JobRole {
+  id             String             @id @default(uuid())
+  title          String
+  description    String
+  seniorityLevel String             // Junior, Mid, Senior, Lead
+  requiredSkills String             // Stored as JSON string array
+  recruiterId    String
+  recruiter      User               @relation("RecruiterJobs", fields: [recruiterId], references: [id])
+  interviews     InterviewSession[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model InterviewSession {
+  id                 String             @id @default(uuid())
+  candidateId        String
+  candidate          User               @relation("CandidateInterviews", fields: [candidateId], references: [id])
+  jobRoleId          String
+  jobRole            JobRole            @relation(fields: [jobRoleId], references: [id])
+  status             InterviewStatus    @default(CREATED)
+  currentStage       String             @default("INITIALIZED") // INITIALIZED, BASELINE, INVESTIGATION, CHALLENGE, COMPLETED
+  currentDifficulty  Int                @default(2) // 1 to 5
+  totalQuestions     Int                @default(0)
+  maxQuestions       Int                @default(10)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  
+  // Temporal Baseline Data
+  baselineLatencyMs  Float?
+  baselinePauseMs    Float?
+  baselineVariance   Float?
+  
+  // Relations
+  resumeProfile      ResumeProfile?
+  questions          Question[]
+  skillAssessments   SkillAssessment[]
+  timingEvents       TimingEvent[]
+  integrityEvents    IntegrityEvent[]
+  hashBlocks         AuditHashBlock[]
+  evaluationReport   EvaluationReport?
+  
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([candidateId])
+  @@index([status])
+}
+
+model ResumeProfile {
+  id                 String             @id @default(uuid())
+  interviewSessionId String             @unique
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  rawText            String
+  parsedDataJson     String             // Full structured Resume Knowledge Map
+  claims             ResumeClaim[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+}
+
+model ResumeClaim {
+  id                 String             @id @default(uuid())
+  resumeProfileId    String
+  resumeProfile      ResumeProfile      @relation(fields: [resumeProfileId], references: [id], onDelete: Cascade)
+  category           String             // SKILL, PROJECT, EXPERIENCE, CERTIFICATION, METRIC
+  topic              String             // e.g. "React", "Redis Caching", "JWT Auth"
+  rawClaimText       String             // "Implemented Redis caching with 99.9% uptime"
+  claimedLevel       String?            // "advanced", "lead", "3 years"
+  importance         String             @default("MEDIUM") // LOW, MEDIUM, HIGH, CRITICAL
+  coverageStatus     CoverageStatus     @default(NOT_VERIFIED)
+  verifiedDepth      Int                @default(0) // 0 to 5
+  confidenceScore    Float              @default(0.0) // 0.0 to 1.0
+  evidenceQuotesJson String             @default("[]") // Quotes extracted from candidate answers
+  contradictionsJson String             @default("[]")
+  lastQuestionId     String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([resumeProfileId, topic])
+}
+
+model Question {
+  id                 String             @id @default(uuid())
+  interviewSessionId String
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  sequenceOrder      Int
+  questionText       String
+  questionType       QuestionType
+  targetTopic        String
+  targetClaimId      String?
+  targetDifficulty   Int                // 1 to 5
+  intentRationale    String             // AI's internal explanation of what it is investigating
+  
+  // Timing Milestones (Milliseconds)
+  generatedAt        DateTime           @default(now())
+  displayedAt        DateTime?
+  ttsFinishedAt      DateTime?
+  
+  answer             Answer?
+  
+  @@unique([interviewSessionId, sequenceOrder])
+}
+
+model Answer {
+  id                 String             @id @default(uuid())
+  questionId         String             @unique
+  question           Question           @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  transcriptText     String
+  audioRecordingUrl  String?
+  
+  // Timing & Pause Telemetry
+  speechStartedAt    DateTime
+  speechEndedAt      DateTime
+  responseGapMs      Float              // Duration from question display/audio finish to speech start
+  totalDurationMs    Float              // Duration of actual response
+  pauseCount         Int                @default(0)
+  longestPauseMs     Float              @default(0.0)
+  averagePauseMs     Float              @default(0.0)
+  speechPauseRatio   Float              @default(0.0)
+  
+  // Multi-Dimensional AI Evaluations (Stored as validated structured JSON)
+  evaluationJson     String             // Parsed AnswerEvaluationResult schema
+  evaluatedDepth     Int                // 1 to 5
+  confidenceScore    Float              // 0.0 to 1.0
+  isConsistent       Boolean            @default(true)
+  reasoningSurvival  Boolean            @default(true)
+  
+  createdAt          DateTime           @default(now())
+}
+
+model SkillAssessment {
+  id                 String             @id @default(uuid())
+  interviewSessionId String
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  skillName          String
+  assessedDepth      Int                @default(1) // 1 to 5
+  confidence         Float              @default(0.0)
+  evidenceSummary    String
+  missingEvidence    String?
+  verifiedAt         DateTime           @default(now())
+
+  @@unique([interviewSessionId, skillName])
+}
+
+model TimingEvent {
+  id                 String             @id @default(uuid())
+  interviewSessionId String
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  sequenceOrder      Int
+  eventStage         String             // "BASELINE" or "ACTIVE"
+  latencyMs          Float
+  pauseCount         Int
+  averagePauseMs     Float
+  longestPauseMs     Float
+  deviationFromMean  Float              // Z-score relative to candidate's own baseline
+  flaggedObservation String?            // Soft observation text
+  createdAt          DateTime           @default(now())
+}
+
+model IntegrityEvent {
+  id                 String             @id @default(uuid())
+  interviewSessionId String
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  signalType         IntegritySignalType
+  timestamp          DateTime           @default(now())
+  metadataJson       String             @default("{}") // Duration of blur, device details
+  contextQuestionId  String?
+}
+
+model AuditHashBlock {
+  id                 String             @id @default(uuid())
+  interviewSessionId String
+  interviewSession   InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  sequenceId         Int
+  eventType          String
+  payloadHash        String             // SHA-256 of the event payload
+  previousBlockHash  String             // Hash of the immediately preceding block
+  currentBlockHash   String             // SHA-256(prev_hash + sequence_id + eventType + payloadHash + timestamp)
+  timestamp          DateTime           @default(now())
+
+  @@unique([interviewSessionId, sequenceId])
+}
+
+model EvaluationReport {
+  id                     String             @id @default(uuid())
+  interviewSessionId     String             @unique
+  interviewSession       InterviewSession   @relation(fields: [interviewSessionId], references: [id], onDelete: Cascade)
+  overallScore           Float              // 0-100 normalized
+  roleFitRecommendation  String             // STRONG_FIT, POTENTIAL_FIT, GAP_IDENTIFIED
+  strengthsJson          String             // string[]
+  knowledgeGapsJson      String             // string[]
+  verifiedSkillsJson     String             // Record<string, { depth: number, evidence: string }>
+  unverifiedClaimsJson   String             // string[]
+  consistencyRating      String             // HIGH, MODERATE, LOW
+  reasoningIntegrityJson String             // Comprehensive transparency report
+  summaryMarkdown        String             // Full executive debrief
+  createdAt              DateTime           @default(now())
+}
+
+model AuditLogEntry {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  ipAddress  String?
+  userAgent  String?
+  timestamp  DateTime @default(now())
+}
